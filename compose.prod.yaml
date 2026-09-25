@@ -1,0 +1,71 @@
+# Production overrides:
+#
+#   docker compose -f compose.yaml -f compose.prod.yaml up -d --build
+#
+# Application code, production dependencies and compiled assets are baked into
+# the images. The host's .env is mounted read-only into the PHP containers.
+
+x-prod-php: &prod-php
+    build:
+        context: .
+        target: prod
+    image: ${GREENFIELD_APP_IMAGE:-greenfield-app}:${GREENFIELD_IMAGE_TAG:-latest}
+    restart: always
+    volumes:
+        - ./.env:/var/www/html/.env:ro
+        - greenfield_storage:/var/www/html/storage
+
+services:
+    app:
+        <<: *prod-php
+
+    queue:
+        <<: *prod-php
+
+    scheduler:
+        <<: *prod-php
+
+    web:
+        build:
+            context: .
+            target: web-prod
+        image: ${GREENFIELD_WEB_IMAGE:-greenfield-web}:${GREENFIELD_IMAGE_TAG:-latest}
+        restart: always
+        environment:
+            NGINX_HSTS: 'max-age=31536000; includeSubDomains'
+            SSL_CERTIFICATE: /etc/letsencrypt/live/${APP_DOMAIN:-localhost}/fullchain.pem
+            SSL_CERTIFICATE_KEY: /etc/letsencrypt/live/${APP_DOMAIN:-localhost}/privkey.pem
+            # Re-check for renewed certificates every 6 hours.
+            NGINX_SSL_RELOAD_INTERVAL: 21600
+        volumes:
+            - greenfield_certbot_conf:/etc/letsencrypt:ro
+            - greenfield_certbot_www:/var/www/certbot:ro
+            - greenfield_nginx_ssl:/etc/nginx/ssl
+
+    # Renews Let's Encrypt certificates twice a day. The initial certificate is
+    # requested once by hand; see "HTTPS in production" in the README.
+    certbot:
+        image: certbot/certbot:v5.8.0
+        container_name: greenfield_certbot
+        restart: always
+        networks: [greenfield]
+        entrypoint:
+            [
+                '/bin/sh',
+                '-c',
+                'trap exit TERM; while :; do certbot renew --webroot -w /var/www/certbot --quiet; sleep 12h & wait $${!}; done',
+            ]
+        volumes:
+            - greenfield_certbot_conf:/etc/letsencrypt
+            - greenfield_certbot_www:/var/www/certbot
+
+    db:
+        restart: always
+
+volumes:
+    greenfield_storage:
+        name: greenfield_storage
+    greenfield_certbot_conf:
+        name: greenfield_certbot_conf
+    greenfield_certbot_www:
+        name: greenfield_certbot_www

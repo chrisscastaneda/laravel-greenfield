@@ -1,0 +1,94 @@
+# Greenfield: services shared by every environment.
+#
+#   Development:  docker compose up
+#                 (automatically merges compose.override.yaml)
+#   Production:   docker compose -f compose.yaml -f compose.prod.yaml up -d
+#
+# Variables below are interpolated from the project's .env file.
+
+name: greenfield
+
+x-php-service: &php-service
+    restart: unless-stopped
+    networks: [greenfield]
+
+services:
+    app:
+        <<: *php-service
+        container_name: greenfield_app
+        environment:
+            GREENFIELD_BOOTSTRAP: 'true'
+            RUN_MIGRATIONS: ${RUN_MIGRATIONS:-true}
+        depends_on:
+            db:
+                condition: service_healthy
+
+    queue:
+        <<: *php-service
+        container_name: greenfield_queue
+        command:
+            ['php', 'artisan', 'queue:work', '--tries=3', '--max-time=3600']
+        stop_signal: SIGTERM
+        healthcheck:
+            disable: true
+        depends_on:
+            app:
+                condition: service_healthy
+
+    scheduler:
+        <<: *php-service
+        container_name: greenfield_scheduler
+        command: ['php', 'artisan', 'schedule:work']
+        healthcheck:
+            disable: true
+        depends_on:
+            app:
+                condition: service_healthy
+
+    web:
+        container_name: greenfield_web
+        restart: unless-stopped
+        networks: [greenfield]
+        ports:
+            - '${HTTP_PORT:-80}:80'
+            - '${HTTPS_PORT:-443}:443'
+        environment:
+            NGINX_SERVER_NAME: ${APP_DOMAIN:-localhost}
+            NGINX_PHP_UPSTREAM: app:9000
+            NGINX_HSTS: ''
+        depends_on:
+            app:
+                condition: service_healthy
+
+    db:
+        image: postgres:18-alpine
+        container_name: greenfield_db
+        restart: unless-stopped
+        networks: [greenfield]
+        environment:
+            POSTGRES_DB: ${DB_DATABASE:-greenfield_db}
+            POSTGRES_USER: ${DB_USERNAME:-greenfield}
+            POSTGRES_PASSWORD: ${DB_PASSWORD:-greenfield}
+        volumes:
+            # Postgres 18+ images keep data under /var/lib/postgresql/<major>/docker,
+            # so the volume is mounted one level up (see the postgres image docs).
+            - greenfield_db_data:/var/lib/postgresql
+        healthcheck:
+            test:
+                [
+                    'CMD-SHELL',
+                    'pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"',
+                ]
+            interval: 5s
+            timeout: 3s
+            retries: 10
+
+networks:
+    greenfield:
+        name: greenfield
+
+volumes:
+    greenfield_db_data:
+        name: greenfield_db_data
+    greenfield_nginx_ssl:
+        name: greenfield_nginx_ssl

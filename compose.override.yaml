@@ -1,0 +1,67 @@
+# Development overrides, merged automatically by `docker compose up`.
+#
+# The source tree is bind-mounted, the Vite dev server provides hot reloading,
+# and Postgres is reachable from the host on FORWARD_DB_PORT.
+
+x-dev-php: &dev-php
+    build:
+        context: .
+        target: dev
+        args:
+            UID: ${UID:-1000}
+            GID: ${GID:-1000}
+    image: greenfield-app:dev
+    volumes:
+        - .:/var/www/html
+        - greenfield_node_modules:/var/www/html/node_modules
+
+services:
+    app:
+        <<: *dev-php
+
+    queue:
+        <<: *dev-php
+
+    scheduler:
+        <<: *dev-php
+
+    vite:
+        <<: *dev-php
+        container_name: greenfield_vite
+        restart: unless-stopped
+        networks: [greenfield]
+        command: ['sh', '-c', 'npm install --no-audit --no-fund && npm run dev']
+        environment:
+            GREENFIELD_VITE_ORIGIN: https://${APP_DOMAIN:-localhost}:${VITE_PORT:-5173}
+            GREENFIELD_APP_ORIGIN: ${APP_URL:-https://localhost}
+        healthcheck:
+            disable: true
+        depends_on:
+            app:
+                condition: service_healthy
+
+    web:
+        build:
+            context: .
+            target: web
+        image: greenfield-web:dev
+        ports:
+            - '${VITE_PORT:-5173}:5173'
+        environment:
+            SSL_CERTIFICATE: /etc/nginx/certs/localhost.pem
+            SSL_CERTIFICATE_KEY: /etc/nginx/certs/localhost-key.pem
+            NGINX_VITE_UPSTREAM: vite:5173
+        volumes:
+            - ./public:/var/www/html/public:ro
+            - ./storage/app/public:/var/www/html/storage/app/public:ro
+            - ./docker/nginx/certs:/etc/nginx/certs:ro
+            - ./docker/nginx/dev/vite.conf.template:/etc/nginx/templates/vite.conf.template:ro
+            - greenfield_nginx_ssl:/etc/nginx/ssl
+
+    db:
+        ports:
+            - '${FORWARD_DB_PORT:-5432}:5432'
+
+volumes:
+    greenfield_node_modules:
+        name: greenfield_node_modules
